@@ -8,13 +8,11 @@ import re
 import json
 from groq import Groq
 
-# ─── Load API key from env (set via .env or shell export) ───────────────────
 client = Groq(api_key=os.environ.get("GROQ_API_KEY", ""))
 
-MODEL = "llama-3.3-70b-versatile"   # fast & capable
+MODEL = "llama-3.3-70b-versatile"
 
-# ─── Stage-aware system prompts ─────────────────────────────────────────────
-SYSTEM_BASE = """You are Alex, a professional and friendly AI Hiring Assistant for TalentScout — 
+SYSTEM_BASE = """You are Jay, a professional and friendly AI Hiring Assistant for TalentScout — 
 a tech recruitment agency. Your SOLE purpose is screening technology candidates.
 
 Rules you MUST follow:
@@ -42,13 +40,13 @@ class ChatEngine:
     """Manages multi-turn conversation and Groq LLM calls."""
 
     def __init__(self):
-        self._info_field_index = 0   # which INFO_FIELDS we're collecting next
+        pass
 
     # ── Public helpers ───────────────────────────────────────────────────────
 
     def get_greeting(self) -> str:
         return (
-            "👋 Hi there! I'm Alex, your AI Hiring Assistant from TalentScout.\n\n"
+            "👋 Hi there! I'm Jay, your AI Hiring Assistant from TalentScout.\n\n"
             "I'll guide you through a quick screening process — it usually takes 5–10 minutes. "
             "We'll gather some basic details about you and then ask a few technical questions "
             "tailored to your background.\n\n"
@@ -77,12 +75,11 @@ class ChatEngine:
         stage: str,
         candidate: dict,
         history: list,
-    ) -> tuple[str, str, dict]:
+    ) -> tuple:
         """
         Returns (assistant_response, new_stage, updated_candidate).
         """
         if stage == "greeting":
-            # First real input = full name
             return self._handle_info_gathering(user_text, candidate, history, field_override="full_name")
 
         if stage == "info_gathering":
@@ -94,7 +91,6 @@ class ChatEngine:
         if stage == "tech_questions":
             return self._handle_tech_questions(user_text, candidate, history)
 
-        # Fallback
         resp = self._llm(SYSTEM_BASE, history + [{"role": "user", "content": user_text}])
         return resp, stage, candidate
 
@@ -102,21 +98,12 @@ class ChatEngine:
 
     def _handle_info_gathering(
         self, user_text: str, candidate: dict, history: list, field_override: str = None
-    ) -> tuple[str, str, dict]:
-        """Store answer, ask next question or move to tech_stack stage."""
-
-        # Which field are we expecting an answer for?
+    ) -> tuple:
         current_field = field_override or self._current_field(candidate)
-
-        # Validate / extract with LLM if needed
         candidate[current_field] = user_text.strip()
-
-        # Move to next missing field
         next_field = self._next_missing_field(candidate)
 
         if next_field is None:
-            # All info gathered — transition to tech_stack
-            tech = candidate.get("tech_stack", "")
             ack = self._ack_and_transition(candidate, history, user_text)
             return ack, "tech_stack", candidate
 
@@ -131,51 +118,56 @@ class ChatEngine:
 
     def _handle_tech_stack(
         self, user_text: str, candidate: dict, history: list
-    ) -> tuple[str, str, dict]:
-        """Parse tech stack and generate technical questions."""
+    ) -> tuple:
         candidate["tech_stack"] = user_text.strip()
 
-        # Ask LLM to generate 3–5 tailored technical questions
         questions = self._generate_tech_questions(user_text, candidate)
+        total = len(questions)
+
         candidate["tech_questions"] = questions
         candidate["tech_answers"] = {}
-        candidate["current_q_index"] = 0
+        candidate["current_q_index"] = 0   # tracks which question was LAST SHOWN (0-based)
 
         intro = (
             f"Excellent! You have a solid tech background. 💪\n\n"
-            f"I'll now ask you {len(questions)} technical questions based on your stack. "
+            f"I'll now ask you {total} technical questions based on your stack. "
             f"Take your time — answer as thoroughly as you like.\n\n"
-            f"Question 1 of {len(questions)}:\n\n{questions[0]}"
+            f"Question 1 of {total}:\n\n{questions[0]}"
         )
         return intro, "tech_questions", candidate
 
     def _handle_tech_questions(
         self, user_text: str, candidate: dict, history: list
-    ) -> tuple[str, str, dict]:
-        """Record answer, ask next question, or conclude."""
-        idx = candidate.get("current_q_index", 0)
+    ) -> tuple:
+        """
+        current_q_index = index of the question that was just SHOWN to the user.
+        We save the answer for that question, then show the next one.
+        """
+        idx = candidate.get("current_q_index", 0)      # question just answered (0-based)
         questions = candidate.get("tech_questions", [])
+        total = len(questions)
 
-        # Save answer
-        candidate["tech_answers"][f"q{idx+1}"] = user_text.strip()
+        # Save the answer for the question they just answered
+        candidate["tech_answers"][f"q{idx + 1}"] = user_text.strip()
 
-        next_idx = idx + 1
-        candidate["current_q_index"] = next_idx
+        next_idx = idx + 1  # next question to show
 
-        if next_idx >= len(questions):
-            # All questions done → farewell
+        # All questions answered → farewell
+        if next_idx >= total:
             farewell = self.get_farewell(candidate)
             return farewell, "farewell", candidate
 
+        # Update index to the question we're about to show
+        candidate["current_q_index"] = next_idx
+
         q = questions[next_idx]
         brief_ack = self._brief_ack(history, user_text)
-        response = f"{brief_ack}\n\nQuestion {next_idx+1} of {len(questions)}:\n\n{q}"
+        response = f"{brief_ack}\n\nQuestion {next_idx + 1} of {total}:\n\n{q}"
         return response, "tech_questions", candidate
 
     # ── LLM helpers ─────────────────────────────────────────────────────────
 
     def _llm(self, system: str, messages: list) -> str:
-        """Raw Groq call."""
         try:
             completion = client.chat.completions.create(
                 model=MODEL,
@@ -188,13 +180,11 @@ class ChatEngine:
             return f"I'm experiencing a brief connection issue. Could you please repeat that? (Error: {e})"
 
     def _ack_response(self, field: str, value: str, history: list) -> str:
-        """Generate a short, natural acknowledgement for the collected field."""
-        system = SYSTEM_BASE + "\nYou are acknowledging the candidate's answer in 1 short sentence. Be warm and natural. No filler phrases like 'Great!' overused — vary your language."
+        system = SYSTEM_BASE + "\nAcknowledge the candidate's answer in 1 short sentence. Be warm and natural. Vary your language."
         msg = f"The candidate just provided their {field.replace('_',' ')}: '{value}'. Acknowledge this briefly."
         return self._llm(system, history + [{"role": "user", "content": msg}])
 
     def _brief_ack(self, history: list, answer: str) -> str:
-        """Very short ack between tech questions."""
         system = SYSTEM_BASE + "\nGive a 1-sentence encouraging acknowledgement for a technical answer. Keep it under 15 words. Vary phrasing."
         return self._llm(system, [{"role": "user", "content": f"Candidate answered: {answer}"}])
 
@@ -202,51 +192,51 @@ class ChatEngine:
         name = candidate.get("full_name", "")
         system = SYSTEM_BASE
         msg = (
-            f"We've just finished collecting {name}'s basic info: "
-            f"name={candidate.get('full_name')}, email={candidate.get('email')}, "
-            f"phone={candidate.get('phone')}, experience={candidate.get('years_experience')} yrs, "
-            f"roles={candidate.get('desired_positions')}, location={candidate.get('current_location')}. "
+            f"We've just finished collecting {name}'s basic info. "
             f"Acknowledge this warmly in 2 sentences, tell them we're moving to tech stack questions."
         )
         return self._llm(system, history + [{"role": "user", "content": msg}])
 
-    def _generate_tech_questions(self, tech_stack_text: str, candidate: dict) -> list[str]:
-        """Use LLM to generate 3–5 technical questions based on declared stack."""
+    def _generate_tech_questions(self, tech_stack_text: str, candidate: dict) -> list:
+        """Generate exactly 4 tailored technical questions."""
         system = (
             SYSTEM_BASE
-            + "\nYour task: generate exactly 3 to 5 technical interview questions "
-            "for a candidate based on their tech stack. "
+            + "\nYour task: generate EXACTLY 4 technical interview questions "
+            "for a candidate based on their tech stack.\n"
             "Rules:\n"
-            "- Questions should vary in difficulty: 1 basic, 2 intermediate, 1-2 advanced.\n"
+            "- Q1: basic/conceptual\n"
+            "- Q2: intermediate practical\n"
+            "- Q3: intermediate/advanced\n"
+            "- Q4: advanced/architectural\n"
             "- Questions must be specific to the technologies listed.\n"
             "- Do NOT include answers.\n"
-            "- Return ONLY a JSON array of question strings, no other text.\n"
-            "- Example format: [\"Q1\", \"Q2\", \"Q3\"]\n"
+            "- Return ONLY a valid JSON array of exactly 4 question strings, nothing else.\n"
+            "- Example: [\"Q1\", \"Q2\", \"Q3\", \"Q4\"]\n"
         )
         experience = candidate.get("years_experience", "unknown")
         role = candidate.get("desired_positions", "engineer")
         prompt = (
             f"Candidate experience: {experience} years. Desired role: {role}.\n"
             f"Declared tech stack: {tech_stack_text}\n\n"
-            "Generate 3-5 relevant technical interview questions as a JSON array."
+            "Generate EXACTLY 4 technical interview questions as a JSON array."
         )
         raw = self._llm(system, [{"role": "user", "content": prompt}])
 
-        # Extract JSON array from response
         try:
             match = re.search(r'\[.*?\]', raw, re.DOTALL)
             if match:
                 questions = json.loads(match.group())
-                if isinstance(questions, list) and questions:
-                    return questions[:5]
+                if isinstance(questions, list) and len(questions) >= 2:
+                    return questions[:4]   # always cap at 4
         except Exception:
             pass
 
-        # Fallback questions if parsing fails
+        # Fallback — always return exactly 4
         return [
-            f"Can you walk me through a recent project where you used your declared tech stack?",
-            f"What are some best practices you follow when writing production-ready code?",
-            f"How do you approach debugging a complex issue in a live system?",
+            f"Can you explain the core concepts behind your primary tech stack?",
+            f"Describe a challenging technical problem you solved recently and how you approached it.",
+            f"How do you ensure code quality and maintainability in your projects?",
+            f"How would you design a scalable architecture using your declared tech stack?",
         ]
 
     # ── Field tracking ───────────────────────────────────────────────────────
@@ -257,7 +247,7 @@ class ChatEngine:
                 return f
         return INFO_FIELDS[-1]
 
-    def _next_missing_field(self, candidate: dict) -> str | None:
+    def _next_missing_field(self, candidate: dict):
         for f in INFO_FIELDS:
             if f not in candidate or not candidate[f]:
                 return f
