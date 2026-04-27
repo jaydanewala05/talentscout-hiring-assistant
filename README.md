@@ -69,7 +69,7 @@ The chatbot flows through 5 stages:
 
 | Stage | What happens |
 |---|---|
-| **Greeting** | Alex introduces himself and starts the screening |
+| **Greeting** | Jay introduces himself and starts the screening |
 | **Profile** | Collects name, email, phone, experience, desired role, location |
 | **Tech Stack** | Candidate lists their technologies |
 | **Assessment** | 3–5 LLM-generated technical questions, tailored to their stack |
